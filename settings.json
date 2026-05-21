@@ -1,3 +1,5 @@
 {
-  "urlRandomness": "6Urhqpc"
+  "enabledPlugins": {
+    "expo@claude-plugins-official": true
+  }
 }
