@@ -4,28 +4,45 @@ import {
   TextInput, TouchableOpacity, ScrollView, Alert, 
   KeyboardAvoidingView, Platform 
 } from 'react-native';
+import * as Notifications from 'expo-notifications';
 
-// Importaciones oficiales de Firebase SDK v9+
+// --- IMPORTACIONES DE FIREBASE ---
 import { initializeApp } from 'firebase/app';
 import { 
-  getAuth, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signOut, 
-  onAuthStateChanged 
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  deleteDoc, 
-  doc, 
-  onSnapshot, 
-  query,
-  orderBy 
+  getFirestore, collection, addDoc, deleteDoc, updateDoc, doc, onSnapshot, query, orderBy 
 } from 'firebase/firestore';
 
-// ⚠️ SUSTITUYE ESTOS VALORES CON LOS DE TU CONFIGURACIÓN DE FIREBASE CONSOLE
+
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+const FILTERS = {
+  all: 'all',
+  upcoming: 'upcoming',
+  past: 'past',
+};
+
+const isUpcomingEvent = (eventDate) => {
+  const date = new Date(eventDate);
+  return !Number.isNaN(date.getTime()) && date.getTime() >= Date.now();
+};
+
+const formatEventDate = (eventDate) => {
+  const date = new Date(eventDate);
+  if (Number.isNaN(date.getTime())) return 'Fecha inválida';
+  return date.toLocaleString();
+};
+
+//  VALORES DE FIREBASE CONSOLA
 const firebaseConfig = {
   apiKey: "AIzaSyAtMNT2GWOOx3-8rnpO04m_OMwsH-aiAtA",
   authDomain: "app-eventos-3affd.firebaseapp.com",
@@ -35,42 +52,53 @@ const firebaseConfig = {
   appId: "1:322773459644:web:05b96dc19a0b080be3a6b9"
 };
 
-// Inicializar Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
 export default function App() {
-  // --- ESTADOS DE NAVEGACIÓN ---
+  // --- ESTADOS DE NAVEGACIÓN Y USUARIO ---
   const [currentScreen, setCurrentScreen] = useState('splash');
   const [user, setUser] = useState(null);
 
-  // --- ESTADOS DEL CRUD ---
+  // --- ESTADOS DEL CRUD Y NUEVAS FUNCIONES ---
   const [events, setEvents] = useState([]);
   const [inputTitle, setInputTitle] = useState('');
   const [inputType, setInputType] = useState('');
+  const [inputDate, setInputDate] = useState('');
   const [editingId, setEditingId] = useState(null);
+  
+  const [selectedEventId, setSelectedEventId] = useState(null);
+  const [activeFilter, setActiveFilter] = useState(FILTERS.all);
 
   // --- ESTADOS DE AUTENTICACIÓN ---
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  // --- ESCUCHA PRINCIPAL DE AUTENTICACIÓN Y SPLASH ---
+  // --- CONFIGURACIÓN INICIAL (Auth y Notificaciones) ---
   useEffect(() => {
-    // Escucha en tiempo real si hay un usuario logueado en el dispositivo
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
     });
 
-    // Mantener el Splash Screen visible por 3 segundos de manera fija
     const timer = setTimeout(() => {
-      if (auth.currentUser) {
-        setCurrentScreen('home');
-      } else {
-        setCurrentScreen('login');
-      }
+      if (auth.currentUser) setCurrentScreen('home');
+      else setCurrentScreen('login');
     }, 3000);
+
+    const setupNotifications = async () => {
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('event-reminders', {
+          name: 'Event reminders',
+          importance: Notifications.AndroidImportance.HIGH,
+          lightColor: COLORS.elSalvadorBlue,
+        });
+      }
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') await Notifications.requestPermissionsAsync();
+    };
+    setupNotifications();
 
     return () => {
       unsubscribeAuth();
@@ -78,14 +106,10 @@ export default function App() {
     };
   }, []);
 
-  // --- ESCUCHA EN TIEMPO REAL DE FIRESTORE (CRUD) ---
+  // --- ESTADO DE FIRESTORE ---
   useEffect(() => {
     if (!user) return;
-
-    // Consulta los eventos ordenados por la fecha de creación de forma descendente
     const q = query(collection(db, 'eventos'), orderBy('createdAt', 'desc'));
-    
-    // Escucha cambios en la colección (agrega, edita o elimina al instante)
     const unsubscribeFirestore = onSnapshot(q, (snapshot) => {
       const docsData = snapshot.docs.map(docSnap => ({
         id: docSnap.id,
@@ -95,11 +119,18 @@ export default function App() {
     }, (error) => {
       console.log("Error al mapear Firestore:", error);
     });
-
     return () => unsubscribeFirestore();
   }, [user]);
 
-  // --- FUNCIONES DE AUTENTICACIÓN REALES ---
+  // --- LÓGICA DE FILTRADO ---
+  const selectedEvent = events.find((event) => event.id === selectedEventId) || null;
+  const filteredEvents = events.filter((event) => {
+    if (activeFilter === FILTERS.upcoming) return isUpcomingEvent(event.date);
+    if (activeFilter === FILTERS.past) return !isUpcomingEvent(event.date);
+    return true;
+  });
+
+  // --- FUNCIONES DE AUTENTICACIÓN ---
   const handleLogin = async () => {
     if (email.trim() === '' || password.trim() === '') {
       Alert.alert('Acceso Denegado', 'Por favor, completa tus credenciales.');
@@ -108,8 +139,7 @@ export default function App() {
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
       setCurrentScreen('home');
-      setEmail('');
-      setPassword('');
+      setEmail(''); setPassword('');
     } catch (error) {
       Alert.alert('Error de Autenticación', error.message);
     }
@@ -117,20 +147,16 @@ export default function App() {
 
   const handleRegister = async () => {
     if (email.trim() === '' || password.trim() === '' || confirmPassword.trim() === '') {
-      Alert.alert('Error', 'Todos los campos son obligatorios.');
-      return;
+      Alert.alert('Error', 'Todos los campos son obligatorios.'); return;
     }
     if (password !== confirmPassword) {
-      Alert.alert('Error', 'Las contraseñas no coinciden.');
-      return;
+      Alert.alert('Error', 'Las contraseñas no coinciden.'); return;
     }
     try {
       await createUserWithEmailAndPassword(auth, email.trim(), password);
       Alert.alert('Registro Exitoso', 'Tu cuenta ha sido creada.');
       setCurrentScreen('login');
-      setEmail('');
-      setPassword('');
-      setConfirmPassword('');
+      setEmail(''); setPassword(''); setConfirmPassword('');
     } catch (error) {
       Alert.alert('Error de Registro', error.message);
     }
@@ -145,30 +171,40 @@ export default function App() {
     }
   };
 
-  // --- OPERACIONES DEL CRUD REALES CON FIRESTORE ---
+  // --- OPERACIONES CRUD EN FIRESTORE ---
   const handleSaveEvent = async () => {
-    if (inputTitle.trim() === '' || inputType.trim() === '') {
-      Alert.alert('Error', 'Se requieren todos los campos del evento.');
+    if (inputTitle.trim() === '' || inputType.trim() === '' || inputDate.trim() === '') {
+      Alert.alert('Error', 'Completa título, categoría y fecha (YYYY-MM-DDTHH:mm).');
       return;
     }
+    const parsedDate = new Date(inputDate);
+    if (Number.isNaN(parsedDate.getTime())) {
+      Alert.alert('Error', 'Fecha inválida. Usa formato YYYY-MM-DDTHH:mm');
+      return;
+    }
+    const normalizedDate = parsedDate.toISOString();
+
     try {
       if (editingId) {
-        // Para editar, primero eliminamos la lógica local y actualizamos el documento en Firestore
-        // Para simplificar la arquitectura en un solo archivo, recreamos el nodo o puedes usar updateDoc:
-        // await updateDoc(doc(db, 'eventos', editingId), { title: inputTitle, type: inputType });
-        Alert.alert('Aviso', 'Puedes presionar eliminar y volver a inyectar el evento modificado.');
+        // Actualiza documento existente en Firebase
+        await updateDoc(doc(db, 'eventos', editingId), {
+          title: inputTitle.trim(),
+          type: inputType.trim(),
+          date: normalizedDate
+        });
         setEditingId(null);
       } else {
-        // Crear documento en la colección 'eventos'
+        // Crea nuevo documento en Firebase con los campos nuevos
         await addDoc(collection(db, 'eventos'), {
           title: inputTitle.trim(),
           type: inputType.trim(),
-          userId: user.uid, // Registra qué usuario creó el evento
-          createdAt: Date.now() // Timestamp para ordenar la lista
+          date: normalizedDate,
+          attending: false,
+          userId: user.uid,
+          createdAt: Date.now()
         });
       }
-      setInputTitle(''); 
-      setInputType('');
+      setInputTitle(''); setInputType(''); setInputDate('');
     } catch (error) {
       Alert.alert('Error en Firestore', error.message);
     }
@@ -176,11 +212,58 @@ export default function App() {
 
   const handleDeleteEvent = async (id) => {
     try {
-      // Eliminar el documento por su ID único autogenerado por Firebase
       await deleteDoc(doc(db, 'eventos', id));
+      if (selectedEventId === id) setSelectedEventId(null);
+      if (editingId === id) {
+        setEditingId(null); setInputTitle(''); setInputType(''); setInputDate('');
+      }
     } catch (error) {
       Alert.alert('Error al eliminar', error.message);
     }
+  };
+
+  const handleEditEvent = (event) => {
+    setInputTitle(event.title);
+    setInputType(event.type);
+    const localDate = new Date(event.date);
+    const normalized = Number.isNaN(localDate.getTime()) ? '' : localDate.toISOString().slice(0, 16);
+    setInputDate(normalized);
+    setEditingId(event.id);
+  };
+
+  const toggleAttendance = async (event) => {
+    try {
+      // Actualiza el estado de asistencia directamente en la nube
+      await updateDoc(doc(db, 'eventos', event.id), {
+        attending: !event.attending
+      });
+    } catch (error) {
+      Alert.alert('Error', error.message);
+    }
+  };
+
+  const scheduleReminder = async (event) => {
+    const eventTime = new Date(event.date).getTime();
+    const triggerDate = new Date(eventTime - 60 * 60 * 1000); // 1 hora antes
+
+    if (triggerDate.getTime() <= Date.now()) {
+      Alert.alert('Aviso', 'El evento es muy pronto o ya pasó.'); return;
+    }
+
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status !== 'granted') {
+      const permission = await Notifications.requestPermissionsAsync();
+      if (permission.status !== 'granted') return;
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `Recordatorio: ${event.title}`,
+        body: `Tu evento inicia a las ${formatEventDate(event.date)}`,
+      },
+      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate },
+    });
+    Alert.alert('Éxito', 'Recordatorio programado 1 hora antes del evento.');
   };
 
   // --- RENDERIZADO CONDICIONAL ---
@@ -269,22 +352,77 @@ export default function App() {
     );
   }
 
-  // 4. PANTALLA PRINCIPAL (CRUD)
+  // 4. PANTALLA DE DETALLE DEL EVENTO
+  if (selectedEvent) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => setSelectedEventId(null)}>
+            <Text style={styles.logoutText}>{'< Volver'}</Text>
+          </TouchableOpacity>
+          <Text style={styles.headerText}>Detalles</Text>
+        </View>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.panel}>
+            <Text style={styles.inputLabel}>Título</Text>
+            <Text style={styles.detailTitle}>{selectedEvent.title}</Text>
+
+            <Text style={styles.inputLabel}>Categoría</Text>
+            <Text style={styles.detailText}>{selectedEvent.type}</Text>
+
+            <Text style={styles.inputLabel}>Fecha</Text>
+            <Text style={styles.detailText}>{formatEventDate(selectedEvent.date)}</Text>
+
+            <Text style={styles.inputLabel}>Estado</Text>
+            <Text style={[styles.detailText, { color: isUpcomingEvent(selectedEvent.date) ? COLORS.primaryGreen : COLORS.danger }]}>
+              {isUpcomingEvent(selectedEvent.date) ? 'Próximo' : 'Pasado'}
+            </Text>
+
+            <Text style={styles.inputLabel}>Mi Asistencia</Text>
+            <Text style={[styles.detailText, { color: selectedEvent.attending ? COLORS.primaryGreen : COLORS.placeholder }]}>
+              {selectedEvent.attending ? 'Confirmada' : 'Pendiente'}
+            </Text>
+
+            <View style={{ marginTop: 20 }}>
+              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: selectedEvent.attending ? COLORS.inputBg : COLORS.primaryGreen }]} onPress={() => toggleAttendance(selectedEvent)}>
+                <Text style={styles.primaryButtonText}>{selectedEvent.attending ? 'Cancelar Asistencia' : 'Confirmar Asistencia'}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => scheduleReminder(selectedEvent)}>
+                <Text style={styles.secondaryButtonText}>Programar Recordatorio</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => { handleEditEvent(selectedEvent); setSelectedEventId(null); }}>
+                <Text style={styles.secondaryButtonText}>Editar Evento</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // 5. PANTALLA PRINCIPAL (CRUD)
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
       <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         
         <View style={styles.header}>
-          <Text style={styles.headerText}>Comunidad SV</Text>
+          <View>
+            <Text style={styles.headerText}>Comunidad SV</Text>
+            {user && <Text style={{ color: COLORS.placeholder, fontSize: 12, marginTop: 2 }}>{user.email}</Text>}
+          </View>
           <TouchableOpacity onPress={handleLogout}>
             <Text style={styles.logoutText}>Salir</Text>
           </TouchableOpacity>
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Formulario */}
           <View style={styles.panel}>
-            <Text style={styles.mainTitle}>Crear Evento</Text>
+            <Text style={styles.mainTitle}>{editingId ? 'Editar Evento' : 'Crear Evento'}</Text>
             <View style={styles.inputContainer}>
               <Text style={styles.inputLabel}>Nombre del evento</Text>
               <TextInput style={styles.input} placeholder="Ej. Taller de React" placeholderTextColor={COLORS.placeholder} value={inputTitle} onChangeText={setInputTitle} />
@@ -293,24 +431,55 @@ export default function App() {
               <Text style={styles.inputLabel}>Categoría</Text>
               <TextInput style={styles.input} placeholder="Ej. Tecnología" placeholderTextColor={COLORS.placeholder} value={inputType} onChangeText={setInputType} />
             </View>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Fecha (Año-Mes-Dia-Hora:)</Text>
+              <TextInput style={styles.input} placeholder="Ej. 2026-10-15" placeholderTextColor={COLORS.placeholder} value={inputDate} onChangeText={setInputDate} />
+            </View>
             <TouchableOpacity style={styles.primaryButton} onPress={handleSaveEvent}>
-              <Text style={styles.primaryButtonText}>Crear Evento</Text>
+              <Text style={styles.primaryButtonText}>{editingId ? 'Actualizar Evento' : 'Guardar Evento'}</Text>
             </TouchableOpacity>
           </View>
 
+          {/* Lista y Filtros */}
           <View style={styles.listContainer}>
-            <Text style={styles.listTitle}>Eventos Registrados (Cloud)</Text>
-            {events.map((event) => (
+            <Text style={styles.listTitle}>Eventos Registrados</Text>
+            
+            <View style={styles.filtersRow}>
+              <TouchableOpacity style={[styles.filterButton, activeFilter === FILTERS.all && styles.filterButtonActive]} onPress={() => setActiveFilter(FILTERS.all)}>
+                <Text style={styles.filterText}>Todos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.filterButton, activeFilter === FILTERS.upcoming && styles.filterButtonActive]} onPress={() => setActiveFilter(FILTERS.upcoming)}>
+                <Text style={styles.filterText}>Próximos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.filterButton, activeFilter === FILTERS.past && styles.filterButtonActive]} onPress={() => setActiveFilter(FILTERS.past)}>
+                <Text style={styles.filterText}>Pasados</Text>
+              </TouchableOpacity>
+            </View>
+
+            {filteredEvents.map((event) => (
               <View key={event.id} style={styles.card}>
-                <View style={styles.cardContent}>
+                <TouchableOpacity style={styles.cardContent} onPress={() => setSelectedEventId(event.id)}>
                   <Text style={styles.cardTitle}>{event.title}</Text>
-                  <Text style={styles.cardSubtitle}>{event.type}</Text>
-                </View>
+                  <Text style={styles.cardSubtitle}>{event.type} • {formatEventDate(event.date)}</Text>
+                  <Text style={[styles.eventStatus, { color: event.attending ? COLORS.primaryGreen : COLORS.placeholder }]}>
+                    {event.attending ? '✓ Asistencia Confirmada' : 'Pendiente'}
+                  </Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteEvent(event.id)}>
                   <Text style={styles.deleteButtonText}>Eliminar</Text>
                 </TouchableOpacity>
               </View>
             ))}
+
+            {filteredEvents.length === 0 && (
+              <Text style={styles.emptyText}>No hay eventos para este filtro.</Text>
+            )}
+          </View>
+           <View style={styles.footer}>
+            <Text style={styles.footerText}>© 2026 Comunidad SV</Text>
+            <Text style={[styles.footerText, {fontSize: 10, marginTop: 4}]}>
+              Licencia CC BY-NC-SA 4.0 (Uso No Comercial)
+            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -336,6 +505,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   keyboardView: { flex: 1 },
   centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+  
+  // LOGO SPLASH
   containerSplash: { flex: 1, backgroundColor: COLORS.backgroundSplash },
   logoCircle: { width: 160, height: 160, borderRadius: 80, borderWidth: 3, borderColor: COLORS.flagWhite, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', backgroundColor: COLORS.backgroundSplash, shadowColor: COLORS.elSalvadorBlue, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.7, shadowRadius: 10, elevation: 10, marginBottom: 40 },
   flagStripe: { width: '100%', flex: 1 },
@@ -348,25 +519,49 @@ const styles = StyleSheet.create({
   logoDividerSplash: { width: 3, height: 40, backgroundColor: COLORS.danger, marginHorizontal: 8 },
   mainTitleSplash: { fontSize: 32, fontWeight: 'bold', color: COLORS.textWhite, textAlign: 'center', letterSpacing: 2, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
   subTextSplash: { marginTop: 10, fontSize: 14, color: COLORS.elSalvadorBlue, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', letterSpacing: 1 },
+  
+  // UI GENERAL
   panel: { padding: 24, margin: 20, backgroundColor: COLORS.background, justifyContent: 'center' },
   mainTitle: { fontSize: 26, fontWeight: 'bold', color: COLORS.textWhite, textAlign: 'center', marginBottom: 30 },
   inputContainer: { marginBottom: 20 },
   inputLabel: { fontSize: 16, color: COLORS.textWhite, fontWeight: '600', marginBottom: 8 },
   input: { backgroundColor: COLORS.inputBg, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: 6, padding: 16, color: COLORS.textWhite, fontSize: 16 },
+  
+  // BOTONES
   primaryButton: { backgroundColor: COLORS.primaryGreen, paddingVertical: 16, borderRadius: 6, alignItems: 'center', marginTop: 10 },
   primaryButtonText: { fontSize: 16, fontWeight: 'bold', color: COLORS.textWhite },
+  secondaryButton: { backgroundColor: 'transparent', borderWidth: 1, borderColor: COLORS.border, paddingVertical: 16, borderRadius: 6, alignItems: 'center', marginTop: 10 },
+  secondaryButtonText: { fontSize: 14, fontWeight: 'bold', color: COLORS.textWhite },
   linkButton: { marginTop: 25, alignItems: 'center' },
   linkText: { color: COLORS.border, fontSize: 15, fontWeight: '500' },
+  
+  // HEADER Y LISTAS
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
   headerText: { fontSize: 18, fontWeight: 'bold', color: COLORS.textWhite },
   logoutText: { fontSize: 15, color: COLORS.border, fontWeight: '600' },
   scrollContent: { paddingBottom: 40 },
   listContainer: { paddingHorizontal: 24, marginTop: 10 },
   listTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.textWhite, marginBottom: 15 },
+  
+  // FILTROS
+  filtersRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15, gap: 10 },
+  filterButton: { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 6, paddingVertical: 10, alignItems: 'center' },
+  filterButtonActive: { backgroundColor: COLORS.primaryGreen, borderColor: COLORS.primaryGreen },
+  filterText: { color: COLORS.textWhite, fontSize: 13, fontWeight: '600' },
+  
+  // TARJETAS (CARDS)
   card: { backgroundColor: COLORS.inputBg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 8, padding: 16, marginBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   cardContent: { flex: 1 },
   cardTitle: { fontSize: 17, fontWeight: 'bold', color: COLORS.textWhite, marginBottom: 4 },
-  cardSubtitle: { fontSize: 14, color: COLORS.placeholder },
+  cardSubtitle: { fontSize: 13, color: COLORS.placeholder, marginBottom: 4 },
+  eventStatus: { fontSize: 12, fontWeight: 'bold' },
   deleteButton: { padding: 8 },
   deleteButtonText: { color: COLORS.danger, fontWeight: 'bold', fontSize: 14 },
+  emptyText: { color: COLORS.placeholder, textAlign: 'center', marginTop: 20 },
+
+  // DETALLES
+  detailTitle: { fontSize: 24, fontWeight: 'bold', color: COLORS.textWhite, marginBottom: 20 },
+  detailText: { fontSize: 16, color: COLORS.placeholder, marginBottom: 20 },
+  footer: { paddingVertical: 25, alignItems: 'center', marginTop: 10 },
+  footerText: { fontSize: 15, color: COLORS.placeholder, textAlign: 'center' },
 });
