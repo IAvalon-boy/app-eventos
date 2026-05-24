@@ -24,10 +24,10 @@ Este es un proyecto "Source-Available" diseñado para uso personal y comunitario
 
 Todo el código fuente y el diseño visual de este repositorio están bajo la licencia **Creative Commons Atribución-NoComercial-CompartirIgual 4.0 Internacional (CC BY-NC-SA 4.0)**.
 
-**Esto significa que eres libre de:**
+**Libre de:**
 * **Compartir:** Copiar y redistribuir el material en cualquier medio o formato.
 * **Adaptar:** Remezclar, transformar y construir a partir del material.
 
 **Bajo las siguientes condiciones:**
-* **No Comercial:** No puedes utilizar el material para fines comerciales.
-* **Compartir Igual:** Si remezclas, transformas o creas a partir del material, debes distribuir tus contribuciones bajo la misma licencia que el original.
+* **No Comercial:** No se puede utilizar el material para fines comerciales.
+* **Compartir Igual:** Si se mezcla, se transforma o se crea a partir del material, se debe distribuir las contribuciones bajo la misma licencia que el original.
