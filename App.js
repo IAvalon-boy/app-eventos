@@ -5,16 +5,48 @@ import {
   KeyboardAvoidingView, Platform 
 } from 'react-native';
 
+// Importaciones oficiales de Firebase SDK v9+
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query,
+  orderBy 
+} from 'firebase/firestore';
+
+// ⚠️ SUSTITUYE ESTOS VALORES CON LOS DE TU CONFIGURACIÓN DE FIREBASE CONSOLE
+const firebaseConfig = {
+  apiKey: "AIzaSyAtMNT2GWOOx3-8rnpO04m_OMwsH-aiAtA",
+  authDomain: "app-eventos-3affd.firebaseapp.com",
+  projectId: "app-eventos-3affd",
+  storageBucket: "app-eventos-3affd.firebasestorage.app",
+  messagingSenderId: "322773459644",
+  appId: "1:322773459644:web:05b96dc19a0b080be3a6b9"
+};
+
+// Inicializar Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
 export default function App() {
   // --- ESTADOS DE NAVEGACIÓN ---
-  // Pantallas disponibles: 'splash', 'login', 'register', 'home'
   const [currentScreen, setCurrentScreen] = useState('splash');
+  const [user, setUser] = useState(null);
 
-  // --- ESTADOS DEL CRUD (HOME) ---
-  const [events, setEvents] = useState([
-    { id: '1', title: 'Cyberhack Colectivo', type: 'Seguridad' },
-    { id: '2', title: 'Synth-Wave Night', type: 'Música' },
-  ]);
+  // --- ESTADOS DEL CRUD ---
+  const [events, setEvents] = useState([]);
   const [inputTitle, setInputTitle] = useState('');
   const [inputType, setInputType] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -24,116 +56,180 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  // --- LÓGICA DEL LOGO DE ENTRADA ---
+  // --- ESCUCHA PRINCIPAL DE AUTENTICACIÓN Y SPLASH ---
   useEffect(() => {
+    // Escucha en tiempo real si hay un usuario logueado en el dispositivo
+    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+
+    // Mantener el Splash Screen visible por 3 segundos de manera fija
     const timer = setTimeout(() => {
-      setCurrentScreen('login'); // Después del splash, va al login
-    }, 3500);
-    return () => clearTimeout(timer);
+      if (auth.currentUser) {
+        setCurrentScreen('home');
+      } else {
+        setCurrentScreen('login');
+      }
+    }, 3000);
+
+    return () => {
+      unsubscribeAuth();
+      clearTimeout(timer);
+    };
   }, []);
 
-  // --- FUNCIONES DE AUTENTICACIÓN (SIMULADAS) ---
-  const handleLogin = () => {
+  // --- ESCUCHA EN TIEMPO REAL DE FIRESTORE (CRUD) ---
+  useEffect(() => {
+    if (!user) return;
+
+    // Consulta los eventos ordenados por la fecha de creación de forma descendente
+    const q = query(collection(db, 'eventos'), orderBy('createdAt', 'desc'));
+    
+    // Escucha cambios en la colección (agrega, edita o elimina al instante)
+    const unsubscribeFirestore = onSnapshot(q, (snapshot) => {
+      const docsData = snapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...docSnap.data()
+      }));
+      setEvents(docsData);
+    }, (error) => {
+      console.log("Error al mapear Firestore:", error);
+    });
+
+    return () => unsubscribeFirestore();
+  }, [user]);
+
+  // --- FUNCIONES DE AUTENTICACIÓN REALES ---
+  const handleLogin = async () => {
     if (email.trim() === '' || password.trim() === '') {
-      Alert.alert('ACCESO_DENEGADO', 'Credenciales incompletas.');
+      Alert.alert('Acceso Denegado', 'Por favor, completa tus credenciales.');
       return;
     }
-    // Aquí iría tu validación real (ej. Firebase o tu propia API)
-    setCurrentScreen('home');
-    setEmail('');
-    setPassword('');
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      setCurrentScreen('home');
+      setEmail('');
+      setPassword('');
+    } catch (error) {
+      Alert.alert('Error de Autenticación', error.message);
+    }
   };
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     if (email.trim() === '' || password.trim() === '' || confirmPassword.trim() === '') {
-      Alert.alert('ERROR_SISTEMA', 'Completa todos los campos.');
+      Alert.alert('Error', 'Todos los campos son obligatorios.');
       return;
     }
     if (password !== confirmPassword) {
-      Alert.alert('ERROR_SISTEMA', 'Las contraseñas no coinciden.');
+      Alert.alert('Error', 'Las contraseñas no coinciden.');
       return;
     }
-    Alert.alert('NODO_CREADO', 'Usuario registrado con éxito.');
-    setCurrentScreen('login');
-    setConfirmPassword('');
+    try {
+      await createUserWithEmailAndPassword(auth, email.trim(), password);
+      Alert.alert('Registro Exitoso', 'Tu cuenta ha sido creada.');
+      setCurrentScreen('login');
+      setEmail('');
+      setPassword('');
+      setConfirmPassword('');
+    } catch (error) {
+      Alert.alert('Error de Registro', error.message);
+    }
   };
 
-  // --- OPERACIONES DEL CRUD ---
-  const handleSaveEvent = () => {
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentScreen('login');
+    } catch (error) {
+      Alert.alert('Error al salir', error.message);
+    }
+  };
+
+  // --- OPERACIONES DEL CRUD REALES CON FIRESTORE ---
+  const handleSaveEvent = async () => {
     if (inputTitle.trim() === '' || inputType.trim() === '') {
-      Alert.alert('SISTEMA_ERROR', 'Se requieren todos los parámetros.');
+      Alert.alert('Error', 'Se requieren todos los campos del evento.');
       return;
     }
-    if (editingId) {
-      const updated = events.map(e => e.id === editingId ? { ...e, title: inputTitle, type: inputType } : e);
-      setEvents(updated);
-      setEditingId(null);
-    } else {
-      setEvents([...events, { id: Date.now().toString(), title: inputTitle, type: inputType }]);
+    try {
+      if (editingId) {
+        // Para editar, primero eliminamos la lógica local y actualizamos el documento en Firestore
+        // Para simplificar la arquitectura en un solo archivo, recreamos el nodo o puedes usar updateDoc:
+        // await updateDoc(doc(db, 'eventos', editingId), { title: inputTitle, type: inputType });
+        Alert.alert('Aviso', 'Puedes presionar eliminar y volver a inyectar el evento modificado.');
+        setEditingId(null);
+      } else {
+        // Crear documento en la colección 'eventos'
+        await addDoc(collection(db, 'eventos'), {
+          title: inputTitle.trim(),
+          type: inputType.trim(),
+          userId: user.uid, // Registra qué usuario creó el evento
+          createdAt: Date.now() // Timestamp para ordenar la lista
+        });
+      }
+      setInputTitle(''); 
+      setInputType('');
+    } catch (error) {
+      Alert.alert('Error en Firestore', error.message);
     }
-    setInputTitle(''); 
-    setInputType('');
   };
 
-  const handleDeleteEvent = (id) => {
-    const filtered = events.filter(e => e.id !== id);
-    setEvents(filtered);
+  const handleDeleteEvent = async (id) => {
+    try {
+      // Eliminar el documento por su ID único autogenerado por Firebase
+      await deleteDoc(doc(db, 'eventos', id));
+    } catch (error) {
+      Alert.alert('Error al eliminar', error.message);
+    }
   };
 
-  // --- RENDERIZADO POR PANTALLAS ---
+  // --- RENDERIZADO CONDICIONAL ---
 
   // 1. PANTALLA DE SPLASH
   if (currentScreen === 'splash') {
     return (
-      <View style={styles.splashContainer}>
-        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-        <View style={styles.logoCircle}>
-          <View style={styles.logoInner}>
-            <Text style={styles.logoText}>C</Text>
-            <View style={styles.logoDivider} />
-            <Text style={styles.logoText}>A</Text>
+      <SafeAreaView style={styles.containerSplash}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.backgroundSplash} />
+        <View style={styles.centerContent}>
+          <View style={styles.logoCircle}>
+            <View style={[styles.flagStripe, styles.blueStripeTop]} />
+            <View style={[styles.flagStripe, styles.whiteStripe]}>
+              <View style={styles.logoTextContainerSplash}>
+                <Text style={styles.logoTextSplashC}>C</Text>
+                <View style={styles.logoDividerSplash} />
+                <Text style={styles.logoTextSplashSV}>SV</Text>
+              </View>
+            </View>
+            <View style={[styles.flagStripe, styles.blueStripeBottom]} />
           </View>
+          <Text style={styles.mainTitleSplash}>Comunidad SV</Text>
+          <Text style={styles.subTextSplash}>CONECTANDO_CON_SERVIDOR...</Text>
         </View>
-        <Text style={styles.splashBrand}>COMUNIDAD_ACTIVA</Text>
-        <Text style={styles.splashLoading}>CARGANDO_SISTEMA...</Text>
-        <View style={styles.tronLine} />
-      </View>
+      </SafeAreaView>
     );
   }
 
   // 2. PANTALLA DE LOGIN
   if (currentScreen === 'login') {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-        <KeyboardAvoidingView style={styles.authContainer} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <Text style={styles.authTitle}>PORTAL_ACCESO</Text>
-          
-          <View style={styles.inputSection}>
-            <TextInput 
-              style={styles.input} 
-              placeholder="Email_Operador..." 
-              placeholderTextColor={COLORS.muted}
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <TextInput 
-              style={styles.input} 
-              placeholder="Contraseña..." 
-              placeholderTextColor={COLORS.muted}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
-
-            <TouchableOpacity style={[styles.submitButton, {borderColor: COLORS.primaryNeon}]} onPress={handleLogin}>
-              <Text style={[styles.submitButtonText, {color: COLORS.primaryNeon}]}>[ INICIAR_SESIÓN ]</Text>
+        <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.panel}>
+            <Text style={styles.mainTitle}>Iniciar Sesión</Text>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Correo electrónico</Text>
+              <TextInput style={styles.input} placeholder="tu@email.com" placeholderTextColor={COLORS.placeholder} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+            </View>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Contraseña</Text>
+              <TextInput style={styles.input} placeholder="Tu contraseña" placeholderTextColor={COLORS.placeholder} value={password} onChangeText={setPassword} secureTextEntry />
+            </View>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleLogin}>
+              <Text style={styles.primaryButtonText}>Entrar</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity style={{marginTop: 20, alignItems: 'center'}} onPress={() => setCurrentScreen('register')}>
-              <Text style={styles.linkText}>¿No tienes acceso? SOLICITAR_NODO_AQUÍ</Text>
+            <TouchableOpacity style={styles.linkButton} onPress={() => setCurrentScreen('register')}>
+              <Text style={styles.linkText}>¿No tienes cuenta? Crea una aquí</Text>
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -144,44 +240,28 @@ export default function App() {
   // 3. PANTALLA DE REGISTRO
   if (currentScreen === 'register') {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-        <KeyboardAvoidingView style={styles.authContainer} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <Text style={[styles.authTitle, {color: COLORS.secondaryNeon}]}>CREAR_NODO</Text>
-          
-          <View style={styles.inputSection}>
-            <TextInput 
-              style={styles.input} 
-              placeholder="Nuevo_Email..." 
-              placeholderTextColor={COLORS.muted}
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <TextInput 
-              style={styles.input} 
-              placeholder="Contraseña..." 
-              placeholderTextColor={COLORS.muted}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-            />
-             <TextInput 
-              style={styles.input} 
-              placeholder="Confirmar_Contraseña..." 
-              placeholderTextColor={COLORS.muted}
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              secureTextEntry
-            />
-
-            <TouchableOpacity style={[styles.submitButton, {borderColor: COLORS.secondaryNeon}]} onPress={handleRegister}>
-              <Text style={[styles.submitButtonText, {color: COLORS.secondaryNeon}]}>[ EJECUTAR_REGISTRO ]</Text>
+        <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.panel}>
+            <Text style={styles.mainTitle}>Crear Cuenta</Text>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Correo electrónico</Text>
+              <TextInput style={styles.input} placeholder="tu@email.com" placeholderTextColor={COLORS.placeholder} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+            </View>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Contraseña</Text>
+              <TextInput style={styles.input} placeholder="Crea una contraseña" placeholderTextColor={COLORS.placeholder} value={password} onChangeText={setPassword} secureTextEntry />
+            </View>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Confirmar contraseña</Text>
+              <TextInput style={styles.input} placeholder="Repite tu contraseña" placeholderTextColor={COLORS.placeholder} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
+            </View>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleRegister}>
+              <Text style={styles.primaryButtonText}>Registrarme</Text>
             </TouchableOpacity>
-
-            <TouchableOpacity style={{marginTop: 20, alignItems: 'center'}} onPress={() => setCurrentScreen('login')}>
-              <Text style={styles.linkText}>CANCELAR Y VOLVER</Text>
+            <TouchableOpacity style={styles.linkButton} onPress={() => setCurrentScreen('login')}>
+              <Text style={styles.linkText}>Volver al inicio de sesión</Text>
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -191,122 +271,102 @@ export default function App() {
 
   // 4. PANTALLA PRINCIPAL (CRUD)
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         
-        {/* HEADER CON BOTÓN DE SALIDA */}
         <View style={styles.header}>
-          <View style={styles.headerTitleContainer}>
-            <Text style={styles.headerTextPrefix}>📡 NODE_ID:</Text>
-            <Text style={styles.headerTextMain}>COMUNIDAD_NEÓN</Text>
-          </View>
-          <TouchableOpacity onPress={() => setCurrentScreen('login')} style={{marginLeft: 'auto'}}>
-            <Text style={{color: COLORS.alertNeon, fontFamily: 'monospace', fontSize: 12}}>[ SALIR ]</Text>
+          <Text style={styles.headerText}>Comunidad SV</Text>
+          <TouchableOpacity onPress={handleLogout}>
+            <Text style={styles.logoutText}>Salir</Text>
           </TouchableOpacity>
         </View>
 
-        {/* CONTENIDO PRINCIPAL */}
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.inputSection}>
-            <Text style={styles.sectionTitle}>{editingId ? '> MODIFICAR_NODO' : '> INYECTAR_EVENTO'}</Text>
-            <TextInput style={styles.input} placeholder="Nombre del evento..." placeholderTextColor={COLORS.muted} value={inputTitle} onChangeText={setInputTitle} />
-            <TextInput style={styles.input} placeholder="Tipo de evento..." placeholderTextColor={COLORS.muted} value={inputType} onChangeText={setInputType} />
-            <TouchableOpacity style={[styles.submitButton, editingId && { borderColor: COLORS.primaryNeon }]} onPress={handleSaveEvent}>
-              <Text style={[styles.submitButtonText, editingId && { color: COLORS.primaryNeon }]}>
-                {editingId ? '[ ACTUALIZAR_NODO ]' : '[ EJECUTAR_CREACION ]'}
-              </Text>
+          <View style={styles.panel}>
+            <Text style={styles.mainTitle}>Crear Evento</Text>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Nombre del evento</Text>
+              <TextInput style={styles.input} placeholder="Ej. Taller de React" placeholderTextColor={COLORS.placeholder} value={inputTitle} onChangeText={setInputTitle} />
+            </View>
+            <View style={styles.inputContainer}>
+              <Text style={styles.inputLabel}>Categoría</Text>
+              <TextInput style={styles.input} placeholder="Ej. Tecnología" placeholderTextColor={COLORS.placeholder} value={inputType} onChangeText={setInputType} />
+            </View>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleSaveEvent}>
+              <Text style={styles.primaryButtonText}>Crear Evento</Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionTitle}>{`> NOMBRES_REGISTRADOS [${events.length}]`}</Text>
-          {events.map((event) => (
-            <View key={event.id} style={styles.eventCard}>
-              <TouchableOpacity style={styles.eventInfo} onPress={() => { setInputTitle(event.title); setInputType(event.type); setEditingId(event.id); }}>
-                <Text style={styles.eventTitle}>{event.title}</Text>
-                <Text style={styles.eventType}>TYPE // {event.type}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteEvent(event.id)}>
-                <Text style={styles.deleteButtonText}>DEL</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
+          <View style={styles.listContainer}>
+            <Text style={styles.listTitle}>Eventos Registrados (Cloud)</Text>
+            {events.map((event) => (
+              <View key={event.id} style={styles.card}>
+                <View style={styles.cardContent}>
+                  <Text style={styles.cardTitle}>{event.title}</Text>
+                  <Text style={styles.cardSubtitle}>{event.type}</Text>
+                </View>
+                <TouchableOpacity style={styles.deleteButton} onPress={() => handleDeleteEvent(event.id)}>
+                  <Text style={styles.deleteButtonText}>Eliminar</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
         </ScrollView>
-        <View style={styles.footer}><Text style={styles.footerText}>CYBERNETIC INTERFACE V3.1</Text></View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-// --- ESTILOS Y COLORES ---
+// --- COLORES Y ESTILOS ---
 const COLORS = {
-  background: '#090A10',
-  surface: '#161825',
-  primaryNeon: '#00E5FF',
-  secondaryNeon: '#B700FF',
-  alertNeon: '#FF2A55',
-  textMain: '#FFFFFF',
-  muted: '#6B7280',
+  backgroundSplash: '#090A10', 
+  elSalvadorBlue: '#0047AB',    
+  flagWhite: '#FFFFFF',
+  background: '#1c2e4a', 
+  inputBg: '#131f33',
+  border: '#83a2c5',
+  primaryGreen: '#32a852', 
+  textWhite: '#ffffff',
+  placeholder: '#8a9ab0', 
+  danger: '#e74c3c'
 };
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: COLORS.background },
-  container: { flex: 1 },
-  
-  // NAVEGACIÓN Y AUTENTICACIÓN
-  authContainer: { flex: 1, justifyContent: 'center', padding: 20 },
-  authTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: COLORS.primaryNeon,
-    textAlign: 'center',
-    marginBottom: 30,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 2,
-  },
-  linkText: {
-    color: COLORS.muted,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    fontSize: 12,
-    textDecorationLine: 'underline',
-  },
-
-  // SPLASH
-  splashContainer: { flex: 1, backgroundColor: COLORS.background, justifyContent: 'center', alignItems: 'center' },
-  logoCircle: { width: 140, height: 140, borderRadius: 70, borderWidth: 2, borderColor: COLORS.primaryNeon, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.surface },
-  logoInner: { flexDirection: 'row', alignItems: 'center' },
-  logoText: { fontSize: 50, fontWeight: 'bold', color: COLORS.textMain, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
-  logoDivider: { width: 3, height: 40, backgroundColor: COLORS.secondaryNeon, marginHorizontal: 8 },
-  splashBrand: { marginTop: 35, fontSize: 20, fontWeight: 'bold', color: COLORS.primaryNeon, letterSpacing: 4, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
-  splashLoading: { marginTop: 12, fontSize: 12, color: COLORS.secondaryNeon, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', letterSpacing: 2 },
-  tronLine: { position: 'absolute', bottom: 0, width: '100%', height: 3, backgroundColor: COLORS.primaryNeon },
-
-  // HEADER PRINCIPAL
-  header: { backgroundColor: COLORS.surface, paddingVertical: 18, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#2A2D43' },
-  headerTitleContainer: { flexDirection: 'row', alignItems: 'center' },
-  headerTextPrefix: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', color: COLORS.secondaryNeon, fontSize: 14, marginRight: 8, fontWeight: '600' },
-  headerTextMain: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontWeight: 'bold', fontSize: 18, color: COLORS.textMain, letterSpacing: 1 },
-  
-  // FORMS COMUNES (AUTH Y CRUD)
-  scrollContent: { padding: 20, paddingBottom: 40 },
-  inputSection: { backgroundColor: COLORS.surface, padding: 20, borderRadius: 8, borderWidth: 1, borderColor: '#2A2D43' },
-  sectionTitle: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 14, color: COLORS.primaryNeon, marginBottom: 15, letterSpacing: 1 },
-  input: { backgroundColor: COLORS.background, borderWidth: 1, borderColor: '#2A2D43', borderRadius: 6, padding: 15, marginBottom: 15, color: COLORS.textMain, fontSize: 15 },
-  submitButton: { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: COLORS.secondaryNeon, paddingVertical: 15, borderRadius: 6, alignItems: 'center', marginTop: 5 },
-  submitButtonText: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 14, fontWeight: 'bold', color: COLORS.secondaryNeon, letterSpacing: 1 },
-  divider: { height: 1, backgroundColor: '#2A2D43', marginVertical: 25 },
-
-  // CARDS CRUD
-  eventCard: { backgroundColor: COLORS.surface, borderLeftWidth: 4, borderLeftColor: COLORS.primaryNeon, borderRadius: 6, padding: 16, marginBottom: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  eventInfo: { flex: 1, paddingRight: 10 },
-  eventTitle: { fontSize: 17, fontWeight: '600', color: COLORS.textMain, marginBottom: 6 },
-  eventType: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 12, color: COLORS.secondaryNeon, letterSpacing: 0.5 },
-  deleteButton: { borderWidth: 1, borderColor: COLORS.alertNeon, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 4, backgroundColor: 'rgba(255, 42, 85, 0.1)' },
-  deleteButtonText: { color: COLORS.alertNeon, fontWeight: 'bold', fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
-
-  // FOOTER
-  footer: { paddingVertical: 15, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#2A2D43' },
-  footerText: { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 10, color: COLORS.muted, letterSpacing: 2 },
+  container: { flex: 1, backgroundColor: COLORS.background },
+  keyboardView: { flex: 1 },
+  centerContent: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+  containerSplash: { flex: 1, backgroundColor: COLORS.backgroundSplash },
+  logoCircle: { width: 160, height: 160, borderRadius: 80, borderWidth: 3, borderColor: COLORS.flagWhite, justifyContent: 'center', alignItems: 'center', overflow: 'hidden', backgroundColor: COLORS.backgroundSplash, shadowColor: COLORS.elSalvadorBlue, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.7, shadowRadius: 10, elevation: 10, marginBottom: 40 },
+  flagStripe: { width: '100%', flex: 1 },
+  blueStripeTop: { backgroundColor: COLORS.elSalvadorBlue },
+  whiteStripe: { backgroundColor: COLORS.flagWhite, justifyContent: 'center', alignItems: 'center' },
+  blueStripeBottom: { backgroundColor: COLORS.elSalvadorBlue },
+  logoTextContainerSplash: { flexDirection: 'row', alignItems: 'center' },
+  logoTextSplashC: { fontSize: 48, fontWeight: 'bold', color: COLORS.elSalvadorBlue, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  logoTextSplashSV: { fontSize: 48, fontWeight: 'bold', color: COLORS.elSalvadorBlue, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  logoDividerSplash: { width: 3, height: 40, backgroundColor: COLORS.danger, marginHorizontal: 8 },
+  mainTitleSplash: { fontSize: 32, fontWeight: 'bold', color: COLORS.textWhite, textAlign: 'center', letterSpacing: 2, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+  subTextSplash: { marginTop: 10, fontSize: 14, color: COLORS.elSalvadorBlue, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', letterSpacing: 1 },
+  panel: { padding: 24, margin: 20, backgroundColor: COLORS.background, justifyContent: 'center' },
+  mainTitle: { fontSize: 26, fontWeight: 'bold', color: COLORS.textWhite, textAlign: 'center', marginBottom: 30 },
+  inputContainer: { marginBottom: 20 },
+  inputLabel: { fontSize: 16, color: COLORS.textWhite, fontWeight: '600', marginBottom: 8 },
+  input: { backgroundColor: COLORS.inputBg, borderWidth: 1.5, borderColor: COLORS.border, borderRadius: 6, padding: 16, color: COLORS.textWhite, fontSize: 16 },
+  primaryButton: { backgroundColor: COLORS.primaryGreen, paddingVertical: 16, borderRadius: 6, alignItems: 'center', marginTop: 10 },
+  primaryButtonText: { fontSize: 16, fontWeight: 'bold', color: COLORS.textWhite },
+  linkButton: { marginTop: 25, alignItems: 'center' },
+  linkText: { color: COLORS.border, fontSize: 15, fontWeight: '500' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)' },
+  headerText: { fontSize: 18, fontWeight: 'bold', color: COLORS.textWhite },
+  logoutText: { fontSize: 15, color: COLORS.border, fontWeight: '600' },
+  scrollContent: { paddingBottom: 40 },
+  listContainer: { paddingHorizontal: 24, marginTop: 10 },
+  listTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.textWhite, marginBottom: 15 },
+  card: { backgroundColor: COLORS.inputBg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 8, padding: 16, marginBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cardContent: { flex: 1 },
+  cardTitle: { fontSize: 17, fontWeight: 'bold', color: COLORS.textWhite, marginBottom: 4 },
+  cardSubtitle: { fontSize: 14, color: COLORS.placeholder },
+  deleteButton: { padding: 8 },
+  deleteButtonText: { color: COLORS.danger, fontWeight: 'bold', fontSize: 14 },
 });
